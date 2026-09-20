@@ -52,12 +52,14 @@ async function scrapeProduct(mockProductId, options = {}) {
         throw new Error(`HTTP ${response ? response.status() : 'no response'} loading ${targetUrl}`);
       }
 
-      // Step 1: Dismiss cookie consent if present
+      // Step 1: Dismiss cookie consent if present and wait for overlay to fully disappear
       try {
         const acceptBtn = page.locator('button:has-text("ACCEPT")').first();
-        await acceptBtn.waitFor({ state: 'visible', timeout: 3000 });
+        await acceptBtn.waitFor({ state: 'visible', timeout: 4000 });
         await acceptBtn.click();
-        await page.waitForTimeout(300);
+        // Wait for the cookie overlay to fully disappear from DOM before any interactions
+        await page.waitForSelector('.cookie-overlay', { state: 'hidden', timeout: 5000 }).catch(() => {});
+        await page.waitForTimeout(600);
         console.log('[Scraper] Dismissed cookie consent.');
       } catch {
         // No cookie banner — fine
@@ -65,53 +67,87 @@ async function scrapeProduct(mockProductId, options = {}) {
 
       // Step 2: Locate the price-block container and scroll into view
       const priceBlock = page.locator('.price-block').first();
-      await priceBlock.waitFor({ state: 'visible', timeout: 5000 });
+      await priceBlock.waitFor({ state: 'visible', timeout: 8000 });
       await priceBlock.scrollIntoViewIfNeeded();
-      await page.waitForTimeout(100);
+      await page.waitForTimeout(400);
 
-      const box = await priceBlock.boundingBox();
-      if (!box) throw new Error('Could not get bounding box for price-block');
+      // Step 3: Satisfy anti-bot requirements by dispatching events DIRECTLY on the element.
+      // IMPORTANT: Each event is dispatched separately with a real 60ms delay between them,
+      // so that Date.now() inside the move() tracker records distinct timestamps.
+      // Batching all events in one page.evaluate() makes them all share the same timestamp
+      // which the server detects as bot-like instant movement and rejects (challenge_failed).
 
-      // Step 3: Satisfy the anti-bot interaction requirements
-      // Need: mouseenter event, then ≥8 mousemove events spaced ≥40ms apart,
-      // and total hover dwell time ≥ 600ms.
-      const startX = box.x + 20;
-      const centerY = box.y + box.height / 2;
-      const sweepWidth = Math.max(box.width - 40, 100);
+      // Fire mouseenter first
+      await page.evaluate(() => {
+        const block = document.querySelector('.price-block');
+        if (!block) return;
+        const rect = block.getBoundingClientRect();
+        block.dispatchEvent(new MouseEvent('mouseenter', {
+          bubbles: true, cancelable: true,
+          clientX: rect.left + rect.width / 2,
+          clientY: rect.top + rect.height / 2
+        }));
+      });
+      await page.waitForTimeout(80);
 
-      await page.mouse.move(startX, centerY);
-      await page.waitForTimeout(60);
-
-      // Perform 15 mouse moves across the full price area width, 60ms apart (>40ms requirement)
-      for (let i = 0; i < 15; i++) {
-        const x = startX + (i * (sweepWidth / 14));
-        const y = centerY + (i % 2 === 0 ? 6 : -6);
-        await page.mouse.move(x, y);
-        await page.waitForTimeout(60);
+      // Fire 12 mousemove events, each separated by 65ms (> 40ms requirement)
+      for (let i = 0; i < 12; i++) {
+        await page.evaluate((idx) => {
+          const block = document.querySelector('.price-block');
+          if (!block) return;
+          const rect = block.getBoundingClientRect();
+          const x = rect.left + 20 + (idx * (rect.width - 40) / 11);
+          const y = rect.top + rect.height / 2 + (idx % 2 === 0 ? 6 : -6);
+          block.dispatchEvent(new MouseEvent('mousemove', {
+            bubbles: true, cancelable: true, clientX: x, clientY: y
+          }));
+        }, i);
+        await page.waitForTimeout(65); // Real 65ms gap so timestamps are distinct
       }
 
-      // Dwell for > 600ms
+      // Extra dwell — total hover time well above minDwellMs (600ms)
       await page.waitForTimeout(700);
 
-      // Step 4: Locate button and ensure disabled attribute is cleared
-      const revealBtn = page.locator('button[aria-label="Reveal price"]');
-      await revealBtn.waitFor({ state: 'visible', timeout: 5000 });
 
-      // If button is still disabled, perform active micro-moves until React re-renders (250ms interval)
+      // Step 4: Locate button — it should now be enabled
+      const revealBtn = page.locator('button[aria-label="Reveal price"]');
+      await revealBtn.waitFor({ state: 'visible', timeout: 8000 });
+
+      // If still disabled, dispatch more events and wait
       let checkAttempts = 0;
       while (await revealBtn.getAttribute('disabled') !== null && checkAttempts < 10) {
         checkAttempts++;
-        await page.mouse.move(startX + (checkAttempts * 10), centerY + (checkAttempts % 2 === 0 ? 4 : -4));
-        await page.waitForTimeout(200);
+        await page.evaluate(() => {
+          const block = document.querySelector('.price-block');
+          if (!block) return;
+          const rect = block.getBoundingClientRect();
+          for (let i = 0; i < 4; i++) {
+            block.dispatchEvent(new MouseEvent('mousemove', {
+              bubbles: true, cancelable: true,
+              clientX: rect.left + 30 + i * 20,
+              clientY: rect.top + rect.height / 2
+            }));
+          }
+        });
+        await page.waitForTimeout(300);
       }
 
+      // Click the button — force-remove any cookie overlay that may have reappeared
+      await page.evaluate(() => {
+        // Dismiss any cookie overlay that is intercepting pointer events
+        const overlay = document.querySelector('.cookie-overlay');
+        if (overlay) overlay.remove();
+        const banner = document.querySelector('.cookie-banner');
+        if (banner) banner.remove();
+      });
+      await page.waitForTimeout(100);
       await revealBtn.click();
       console.log('[Scraper] Clicked "Reveal price" button.');
 
-      // Step 5: Wait for price to load (server round-trip + WASM computation)
-      // The price-block changes class to price-success on completion
+      // Step 5: Wait for price to load (WASM + network round-trip + up to 6 internal retries)
+      // The store retries internally up to 6 times with 300*t ms backoff, so allow up to 55s
       await page.waitForSelector('.price-block.price-success, .price-block.price-error', {
-        timeout: 15000
+        timeout: 55000
       });
 
       // Check if we got an error

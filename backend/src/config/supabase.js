@@ -46,7 +46,7 @@ const db = {
 
   async addProduct(product) {
     const newProduct = {
-      id: product.id || `prod_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+      id: product.id || require('crypto').randomUUID(),
       mock_product_id: product.mock_product_id,
       slug: product.slug,
       name: product.name,

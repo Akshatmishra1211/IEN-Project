@@ -1,0 +1,68 @@
+DESIGN NOTE - INE Product Price Tracker
+========================================
+
+HOW SCRAPING WAS MADE RELIABLE
+--------------------------------
+
+The INE mock store deliberately prevents direct price fetching. Calling /api/product/:id
+only returns metadata (specs, reviews) - never the price. The price is gated behind a
+WASM proof-of-work challenge and an encrypted short-lived bearer token that only gets
+issued after the browser performs real DOM interactions:
+
+  - Cookie consent dismissal
+  - Mouse-entry event on the price block
+  - A minimum of 8 throttled mouse moves across the price block (>=40ms apart)
+  - At least 600ms of dwell/hover time inside the element
+
+To handle this, the scraper uses Playwright to control a real Chromium browser, replaying
+all required gestures programmatically. Once the "Reveal price" button is enabled and
+clicked, Playwright waits for the .price-block.price-success class to appear, confirming
+the WASM challenge passed and the price rendered in the DOM.
+
+It also strips zero-width Unicode characters (\u200B) that the store injects into the
+price string to break naive parseFloat() calls.
+
+For reliability:
+  - Up to 3 retry attempts with exponential backoff (2s -> 4s -> 8s) between retries
+  - Handles transient 429 rate-limit errors gracefully
+  - Always records an honest SUCCESS, RETRIED, or FAILED status in the audit log
+  - Never silences failures with fake 0 values
+
+
+TRADE-OFFS MADE
+----------------
+
+1. Playwright over HTTP Parsing
+   - Direct HTTP is faster and cheaper but completely fails here because the price token
+     requires browser-side WASM execution. Playwright is slower and heavier but guarantees
+     correct extraction every time.
+
+2. External Cron over node-cron
+   - A continuous internal cron loop works locally but on free-tier Render hosting, the
+     container sleeps after inactivity, killing all internal timers. The architecture was
+     changed to expose an authenticated POST /api/cron/scrape-all webhook that external
+     schedulers (cron-job.org or GitHub Actions) call on schedule to wake and trigger scrapes.
+
+3. In-Memory Fallback for Development
+   - Supabase is used in production, but if credentials are absent the app silently falls
+     back to in-memory storage so it still runs locally without any database setup required.
+
+
+WHAT THE AI TOOLS GOT WRONG INITIALLY AND HOW IT WAS CORRECTED
+----------------------------------------------------------------
+
+1. Assumed the REST API returned prices directly
+   - AI First Attempt: Called /api/product/:id expecting a JSON field containing price and stock.
+   - What was discovered: Inspecting the network tab revealed the actual price endpoint is
+     /api/products/:id/price and requires a short-lived WASM-generated bearer token that is
+     only available after the browser-side challenge completes in a real rendering context.
+   - Correction: Replaced direct HTTP calls with a full Playwright automation flow that
+     interacts with the rendered DOM, triggering the challenge and waiting for the reveal.
+
+2. Suggested an always-on node-cron loop inside Express
+   - AI First Attempt: Scheduled scrapes using node-cron inside the Express server process.
+   - What was discovered: Free-tier Render.com hosting puts idle containers to sleep after
+     15 minutes of inactivity, which stops all Node.js background timers and scheduled jobs.
+   - Correction: Removed the internal cron entirely and replaced it with an externally-triggered
+     authenticated webhook endpoint (POST /api/cron/scrape-all with Bearer token auth), designed
+     to be called by cron-job.org or a GitHub Actions workflow on a schedule.
