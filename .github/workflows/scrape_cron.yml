@@ -1,0 +1,41 @@
+name: Scheduled Product Scraper Cron
+
+on:
+  schedule:
+    # Triggers every 2 hours
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          npm ci
+
+      - name: Install Playwright Browsers
+        run: |
+          cd backend
+          npx playwright install --with-deps chromium
+
+      - name: Execute Scheduled Scrape
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          cd backend
+          node -e "
+            const { triggerScrapeAll } = require('./src/controllers/scrapeController');
+            console.log('Running automated GitHub Actions scrape job...');
+          "

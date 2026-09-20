@@ -1,0 +1,12 @@
+{
+  "name": "ine-product-price-tracker",
+  "version": "1.0.0",
+  "description": "Product Price Tracker & Scraper full-stack application for INE Software Engineer Intern assignment",
+  "scripts": {
+    "install:all": "cd backend && npm install && cd ../frontend && npm install",
+    "backend": "cd backend && npm run start",
+    "frontend": "cd frontend && npm run dev",
+    "scrape:headed": "cd backend && npm run scrape:headed",
+    "scrape:headed:custom": "node backend/src/scraper/headedRunner.js"
+  }
+}
