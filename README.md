@@ -2,11 +2,6 @@
 
 Full-stack web application designed to search, track, and scrape product prices & stock over time from INE's hosted mock store ([https://demo.inelabteamdev.com/](https://demo.inelabteamdev.com/)). Built for the **INE Software Engineer Intern Assignment**.
 
-![Tech Stack](https://img.shields.io/badge/Frontend-React%20%7C%20Vite-06b6d4)
-![Backend](https://img.shields.io/badge/Backend-Node.js%20%7C%20Express-3b82f6)
-![Scraper](https://img.shields.io/badge/Scraper-Playwright-10b981)
-![Database](https://img.shields.io/badge/Database-Supabase%20%7C%20PostgreSQL-3ecf8e)
-
 ---
 
 ## 🌟 Key Features
